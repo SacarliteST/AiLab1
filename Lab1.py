@@ -60,8 +60,8 @@ def cutmix_criterion(criterion, pred, y_a, y_b, lam):
     return lam * criterion(pred, y_a) + (1 - lam) * criterion(pred, y_b)
 
 
-def train_model(device, model, optimizer, train_loader, train_data, val_loader, criterion, num_epochs=5,
-                use_cutmix=True):
+def train_model(device, model, optimizer, train_loader, train_data, val_loader, test_loader,
+                criterion, num_epochs=25, use_cutmix=True):
     """
     Выполняет цикл обучения и валидации нейронной сети.
 
@@ -79,7 +79,12 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
     Returns:
         dict: История метрик (значения функции потерь на обучении и F1-меры на валидации).
     """
-    history = {'train_loss': [], 'val_f1': []}
+    history = {
+        'train_loss': [],
+        'val_f1': [],
+        'test_epochs': [],
+        'test_f1': []
+    }
 
     for epoch in range(num_epochs):
         print(f'\nЭпоха {epoch + 1}/{num_epochs}')
@@ -91,14 +96,11 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
 
         for inputs, labels in train_loader:
             inputs, labels = inputs.to(device), labels.to(device)
-
-            # Очистка градиентов перед новым шагом оптимизации
             optimizer.zero_grad()
 
-            # Применение стохастической аугментации CutMix с вероятностью 0.5
             if use_cutmix and np.random.rand() > 0.5:
-                lam = np.random.beta(1.0, 1.0)
-                rand_index = torch.randperm(inputs.size()[0]).to(device)
+                lam = np.random.beta(a=1.0, b=1.0)
+                rand_index = torch.randperm(n=inputs.size()[0]).to(device)
 
                 target_a = labels
                 target_b = labels[rand_index]
@@ -106,58 +108,53 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
                 bbx1, bby1, bbx2, bby2 = rand_bbox(size=inputs.size(), lam=lam)
                 inputs[:, :, bbx1:bbx2, bby1:bby2] = inputs[rand_index, :, bbx1:bbx2, bby1:bby2]
 
-                # Корректировка коэффициента на основе фактической площади вырезанного фрагмента
                 lam = 1 - ((bbx2 - bbx1) * (bby2 - bby1) / (inputs.size()[-1] * inputs.size()[-2]))
-
                 outputs = model(inputs)
-
-                loss = cutmix_criterion(
-                    criterion=criterion,
-                    pred=outputs,
-                    y_a=target_a,
-                    y_b=target_b,
-                    lam=lam
-                )
+                loss = cutmix_criterion(criterion=criterion, pred=outputs, y_a=target_a, y_b=target_b, lam=lam)
             else:
-                # Стандартный прямой проход без аугментации
                 outputs = model(inputs)
                 loss = criterion(outputs, labels)
 
-            # Обратное распространение ошибки и шаг оптимизатора
             loss.backward()
             optimizer.step()
-
             running_loss += loss.item() * inputs.size(0)
 
-        # Вычисление средних потерь за эпоху
         epoch_loss = running_loss / len(train_data)
         history['train_loss'].append(epoch_loss)
         print(f'Train Loss: {epoch_loss:.4f}')
 
-        # ФАЗА ВАЛИДАЦИИ
+        # ФАЗА ВАЛИДАЦИИ (на каждой эпохе)
         model.eval()
-        all_preds = []
-        all_labels = []
-
-        # Отключение вычисления градиентов для снижения потребления памяти
+        all_preds, all_labels = [], []
         with torch.no_grad():
             for inputs, labels in val_loader:
                 inputs, labels = inputs.to(device), labels.to(device)
                 outputs = model(inputs)
-
-                # Определение предсказанного класса (argmax)
-                _, preds = torch.max(outputs, 1)
-
+                _, preds = torch.max(input=outputs, dim=1)
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
 
-        # Расчет взвешенных метрик качества классификации
-        val_precision = precision_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
-        val_recall = recall_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
         val_f1 = f1_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
-
         history['val_f1'].append(val_f1)
-        print(f'Validation - Precision: {val_precision:.4f} | Recall: {val_recall:.4f} | F1: {val_f1:.4f}')
+        print(f'Validation F1: {val_f1:.4f}')
+
+        # =======================================================
+        # ФАЗА ТЕСТИРОВАНИЯ (каждые 5 эпох)
+        # =======================================================
+        if (epoch + 1) % 5 == 0:
+            all_test_preds, all_test_labels = [], []
+            with torch.no_grad():
+                for inputs, labels in test_loader:
+                    inputs, labels = inputs.to(device), labels.to(device)
+                    outputs = model(inputs)
+                    _, preds = torch.max(input=outputs, dim=1)
+                    all_test_preds.extend(preds.cpu().numpy())
+                    all_test_labels.extend(labels.cpu().numpy())
+
+            test_f1 = f1_score(y_true=all_test_labels, y_pred=all_test_preds, average='weighted', zero_division=0)
+            history['test_epochs'].append(epoch + 1)
+            history['test_f1'].append(test_f1)
+            print(f'TEST F1 (Эпоха {epoch + 1}): {test_f1:.4f}')
 
     return history
 
@@ -184,77 +181,107 @@ def create_model(pretrained=True):
 
     return model
 
-def plot_learning_curves(results: dict) -> None:
+
+def plot_learning_curves(results: dict, total_epochs: int) -> None:
     """
-    Визуализирует динамику функции потерь и метрики F1-score на протяжении всех эпох обучения.
-
-    Args:
-        results (dict): Словарь, содержащий истории метрик для каждого проведенного эксперимента.
-                         структура: { 'Имя_эксперимента': {'train_loss': [...], 'val_f1': [...]} }
+    Визуализирует динамику функции потерь и F1-score для выявления переобучения.
     """
-    # Извлечение количества эпох из первого доступного эксперимента
-    first_experiment_key = list(results.keys())[0]
-    num_epochs = len(results[first_experiment_key]['train_loss'])
-    epochs = range(1, num_epochs + 1)
+    epochs = range(1, total_epochs + 1)
+    plt.figure(figsize=(16, 7))
 
-    # Инициализация графического окна (фигуры)
-    plt.figure(figsize=(14, 6))
-
-    # График №1: Динамика функции потерь на обучающей выборке
+    # График №1: Динамика функции потерь (Train Loss)
     plt.subplot(1, 2, 1)
     for exp_name, metrics in results.items():
-        plt.plot(epochs, metrics['train_loss'], marker='o', label=exp_name)
+        plt.plot(epochs, metrics['train_loss'], linewidth=2, label=exp_name)
 
-    plt.title(label='Сходимость функции потерь (Training Loss)')
-    plt.xlabel(xlabel='Эпоха обучения')
-    plt.ylabel(ylabel='Значение потерь (Loss)')
-    plt.xticks(ticks=epochs)
+    plt.title(label='Сходимость функции потерь (Training Loss)', fontsize=14)
+    plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+    plt.ylabel(ylabel='Значение потерь', fontsize=12)
+    plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
     plt.grid(visible=True, linestyle='--', alpha=0.7)
-    plt.legend(loc='upper right')
+    plt.legend(loc='upper right', fontsize=10)
 
-    # График №2: Динамика F1-меры на валидационной выборке
+    # График №2: Динамика F1-меры (Validation + Test)
     plt.subplot(1, 2, 2)
     for exp_name, metrics in results.items():
-        plt.plot(epochs, metrics['val_f1'], marker='s', label=exp_name)
+        line = plt.plot(epochs, metrics['val_f1'], alpha=0.4, linestyle='--', label=f"{exp_name} (Val)")
+        color = line[0].get_color()
 
-    plt.title(label='Динамика качества классификации (Validation F1-score)')
-    plt.xlabel(xlabel='Эпоха обучения')
-    plt.ylabel(ylabel='Взвешенная F1-мера')
-    plt.xticks(ticks=epochs)
+        plt.plot(metrics['test_epochs'], metrics['test_f1'], color=color,
+                 marker='D', markersize=8, linewidth=3, label=f"{exp_name} (TEST)")
+
+    plt.title(label='Качество классификации F1-score (Тест vs Валидация)', fontsize=14)
+    plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+    plt.ylabel(ylabel='Взвешенная F1-мера', fontsize=12)
+    plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
+    plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
     plt.grid(visible=True, linestyle='--', alpha=0.7)
-    plt.legend(loc='lower right')
 
-    # Оптимизация расположения элементов графиков и их вывод на экран
+    plt.legend(loc='lower right', fontsize=9)
+
     plt.tight_layout()
     plt.show()
 
+#Сборка модели с нуля
+class CustomDogsCNN(nn.Module):
+    def __init__(self, num_classes=120):
+        super(CustomDogsCNN, self).__init__()
+
+        # Блок извлечения признаков (Свёрточные слои)
+        self.features = nn.Sequential(
+            # Вход: 3 канала (RGB), 224x224 пикселя
+            nn.Conv2d(in_channels=3, out_channels=32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(num_features=32),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Размер картинки уменьшается в 2 раза: 112x112
+
+            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(num_features=64),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2),  # Размер: 56x56
+
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(num_features=128),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2, stride=2)  # Размер: 28x28
+        )
+
+        # Блок классификации (Полносвязные слои)
+        self.classifier = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(in_features=128 * 28 * 28, out_features=512),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # Защита от переобучения
+            nn.Linear(in_features=512, out_features=num_classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.classifier(x)
+        return x
+
+
 def main():
     """
-    Главная функция: оркестровка подготовки данных, инициализации параметров и запуска серии экспериментов.
+    Главная функция: оркестровка подготовки данных, инициализации параметров и запуска глобальной серии экспериментов.
     """
     # Инициализация вычислительного устройства
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Используемое вычислительное устройство: {device}")
 
-    # Загрузка набора данных
+    # Загрузка и подготовка данных (Stanford Dogs Dataset)
     path = kagglehub.dataset_download(handle="jessicali9530/stanford-dogs-dataset")
     print("Путь к локальной копии датасета:", path)
-
     data_dir = os.path.join(path, 'images/Images')
 
-    # Определение конвейера предварительной обработки изображений
     transform = transforms.Compose([
         transforms.Resize(size=(224, 224)),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
 
-    # Именованные параметры для Dataset
     full_dataset = ImageFolder(root=data_dir, transform=transform)
-    print(f"Общий объем выборки (изображений): {len(full_dataset)}")
-    print(f"Размерность пространства классов: {len(full_dataset.classes)}")
 
-    # Разделение генеральной совокупности на стратифицированные выборки (70% / 15% / 15%)
     train_size = int(0.7 * len(full_dataset))
     val_size = int(0.15 * len(full_dataset))
     test_size = len(full_dataset) - train_size - val_size
@@ -264,77 +291,64 @@ def main():
         lengths=[train_size, val_size, test_size]
     )
 
-    # Инициализация загрузчиков данных с поддержкой пакетной обработки
     train_loader = DataLoader(dataset=train_data, batch_size=32, shuffle=True)
     val_loader = DataLoader(dataset=val_data, batch_size=32, shuffle=False)
     test_loader = DataLoader(dataset=test_data, batch_size=32, shuffle=False)
 
-    print(f"Распределение: Обучение={len(train_data)}, Валидация={len(val_data)}, Тест={len(test_data)}\n")
-
-    # Определение глобальной функции потерь
     criterion = nn.CrossEntropyLoss()
 
-    # Структура данных для агрегации результатов экспериментов
+    # Устанавливаем количество эпох для глобального эксперимента
+    MAX_EPOCHS = 25
     all_results = {}
 
-    # Эксперимент №1: Трансферное обучение (Transfer Learning) + оптимизатор Adam
-    print("ЭКСПЕРИМЕНТ №1: Pretrained (ImageNet) + Adam")
+    print(f"\nЗапуск глобальных экспериментов. Количество эпох: {MAX_EPOCHS}")
+
+    # Эксперимент №1: Pretrained + Adam
+
+    print("\n")
+    print(f"ЭКСПЕРИМЕНТ №1: Pretrained (ImageNet) + Adam")
 
     model_exp1 = create_model(pretrained=True).to(device)
     optimizer_adam = optim.Adam(params=model_exp1.parameters(), lr=1e-4)
 
-    all_results['Exp1_Adam_Pretrained'] = train_model(
-        device=device,
-        model=model_exp1,
-        optimizer=optimizer_adam,
-        train_loader=train_loader,
-        train_data=train_data,
-        val_loader=val_loader,
-        criterion=criterion,
-        num_epochs=5,
-        use_cutmix=True
+    all_results['Exp1_Pretrained_Adam'] = train_model(
+        device=device, model=model_exp1, optimizer=optimizer_adam, test_loader=test_loader,
+        train_loader=train_loader, train_data=train_data, val_loader=val_loader,
+        criterion=criterion, num_epochs=MAX_EPOCHS, use_cutmix=True
     )
 
-    # Эксперимент №2: Трансферное обучение + оптимизатор NAdam
-    print("ЭКСПЕРИМЕНТ №2: Pretrained (ImageNet) + NAdam")
+    # Эксперимент №2: Pretrained + NAdam
+
+    print("\n")
+    print(f"ЭКСПЕРИМЕНТ №2: Pretrained (ImageNet) + NAdam")
 
     model_exp2 = create_model(pretrained=True).to(device)
     optimizer_nadam = optim.NAdam(params=model_exp2.parameters(), lr=1e-4)
 
-    all_results['Exp2_NAdam_Pretrained'] = train_model(
-        device=device,
-        model=model_exp2,
-        optimizer=optimizer_nadam,
-        train_loader=train_loader,
-        train_data=train_data,
-        val_loader=val_loader,
-        criterion=criterion,
-        num_epochs=5,
-        use_cutmix=True
+    all_results['Exp2_Pretrained_NAdam'] = train_model(
+        device=device, model=model_exp2, optimizer=optimizer_nadam, test_loader=test_loader,
+        train_loader=train_loader, train_data=train_data, val_loader=val_loader,
+        criterion=criterion, num_epochs=MAX_EPOCHS, use_cutmix=True
     )
 
-    # Эксперимент №3: Обучение базовой архитектуры со случайной инициализацией весов
+    # Эксперимент №3: Обучение базовой архитектуры с нуля (Custom CNN + Adam)
 
-    print("ЭКСПЕРИМЕНТ №3: Обучение с нуля (From Scratch) + Adam")
+    print("\n")
+    print(f"ЭКСПЕРИМЕНТ №3: Custom CNN + Adam (Сборка с нуля)")
 
-    model_exp3 = create_model(pretrained=False).to(device)
-    optimizer_scratch = optim.Adam(params=model_exp3.parameters(), lr=1e-4)
+    # Используем собранную вручную архитектуру
+    model_exp3 = CustomDogsCNN(num_classes=120).to(device)
+    optimizer_custom = optim.Adam(params=model_exp3.parameters(), lr=1e-4)
 
-    all_results['Exp3_Adam_Scratch'] = train_model(
-        device=device,
-        model=model_exp3,
-        optimizer=optimizer_scratch,
-        train_loader=train_loader,
-        train_data=train_data,
-        val_loader=val_loader,
-        criterion=criterion,
-        num_epochs=5,
-        use_cutmix=True
+    all_results['Exp3_CustomCNN_Adam'] = train_model(
+        device=device, model=model_exp3, optimizer=optimizer_custom, test_loader=test_loader,
+        train_loader=train_loader, train_data=train_data, val_loader=val_loader,
+        criterion=criterion, num_epochs=MAX_EPOCHS, use_cutmix=True
     )
 
-    print("\nСерия экспериментов завершена.")
+    print("\nГлобальная серия экспериментов завершена. Формирование графиков...")
 
-    plot_learning_curves(results=all_results)
+    plot_learning_curves(results=all_results, total_epochs=MAX_EPOCHS)
 
 
 if __name__ == "__main__":
