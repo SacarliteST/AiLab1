@@ -138,9 +138,8 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
         history['val_f1'].append(val_f1)
         print(f'Validation F1: {val_f1:.4f}')
 
-        # =======================================================
-        # ФАЗА ТЕСТИРОВАНИЯ (каждые 5 эпох)
-        # =======================================================
+        # Тестирование
+
         if (epoch + 1) % 5 == 0:
             all_test_preds, all_test_labels = [], []
             with torch.no_grad():
@@ -184,43 +183,46 @@ def create_model(pretrained=True):
 
 def plot_learning_curves(results: dict, total_epochs: int) -> None:
     """
-    Визуализирует динамику функции потерь и F1-score для выявления переобучения.
+    Визуализирует динамику функции потерь и F1-score на ОТДЕЛЬНЫХ графиках для каждого эксперимента.
     """
     epochs = range(1, total_epochs + 1)
-    plt.figure(figsize=(16, 7))
 
-    # График №1: Динамика функции потерь (Train Loss)
-    plt.subplot(1, 2, 1)
     for exp_name, metrics in results.items():
-        plt.plot(epochs, metrics['train_loss'], linewidth=2, label=exp_name)
+        plt.figure(figsize=(14, 5))
 
-    plt.title(label='Сходимость функции потерь (Training Loss)', fontsize=14)
-    plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
-    plt.ylabel(ylabel='Значение потерь', fontsize=12)
-    plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
-    plt.grid(visible=True, linestyle='--', alpha=0.7)
-    plt.legend(loc='upper right', fontsize=10)
+        # График №1: Динамика функции потерь (Train Loss)
+        plt.subplot(1, 2, 1)
+        plt.plot(epochs, metrics['train_loss'], linewidth=2.5, color='#1f77b4', label='Train Loss')
 
-    # График №2: Динамика F1-меры (Validation + Test)
-    plt.subplot(1, 2, 2)
-    for exp_name, metrics in results.items():
-        line = plt.plot(epochs, metrics['val_f1'], alpha=0.4, linestyle='--', label=f"{exp_name} (Val)")
-        color = line[0].get_color()
+        plt.title(label=f'Сходимость функции потерь\n({exp_name})', fontsize=14)
+        plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+        plt.ylabel(ylabel='Значение потерь', fontsize=12)
+        plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
+        plt.grid(visible=True, linestyle='--', alpha=0.7)
+        plt.legend(loc='upper right', fontsize=10)
 
-        plt.plot(metrics['test_epochs'], metrics['test_f1'], color=color,
-                 marker='D', markersize=8, linewidth=3, label=f"{exp_name} (TEST)")
+        # График №2: Динамика F1-меры (Validation + Test)
+        plt.subplot(1, 2, 2)
 
-    plt.title(label='Качество классификации F1-score (Тест vs Валидация)', fontsize=14)
-    plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
-    plt.ylabel(ylabel='Взвешенная F1-мера', fontsize=12)
-    plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
-    plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
-    plt.grid(visible=True, linestyle='--', alpha=0.7)
+        plt.plot(epochs, metrics['val_f1'], alpha=0.5, linestyle='--', color='#ff7f0e', linewidth=2,
+                 label="Validation F1")
 
-    plt.legend(loc='lower right', fontsize=9)
+        plt.plot(metrics['test_epochs'], metrics['test_f1'], color='#ff7f0e',
+                 marker='D', markersize=8, linewidth=3, label="TEST F1")
 
-    plt.tight_layout()
-    plt.show()
+        plt.title(label=f'Качество классификации\n({exp_name})', fontsize=14)
+        plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+        plt.ylabel(ylabel='Взвешенная F1-мера', fontsize=12)
+        plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
+
+        if max(metrics['val_f1']) > 0.5:
+            plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
+
+        plt.grid(visible=True, linestyle='--', alpha=0.7)
+        plt.legend(loc='lower right', fontsize=10)
+
+        plt.tight_layout()
+        plt.show()
 
 #Сборка модели с нуля
 class CustomDogsCNN(nn.Module):
