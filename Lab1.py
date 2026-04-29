@@ -183,7 +183,7 @@ def create_model(pretrained=True):
 
 def plot_learning_curves(results: dict, total_epochs: int) -> None:
     """
-    Визуализирует динамику функции потерь и F1-score на ОТДЕЛЬНЫХ графиках для каждого эксперимента.
+    Визуализирует динамику функции потерь и F1-score
     """
     epochs = range(1, total_epochs + 1)
 
