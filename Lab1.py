@@ -82,8 +82,12 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
     history = {
         'train_loss': [],
         'val_f1': [],
+        'val_precision': [],
+        'val_recall': [],
         'test_epochs': [],
-        'test_f1': []
+        'test_f1': [],
+        'test_precision': [],
+        'test_recall': []
     }
 
     for epoch in range(num_epochs):
@@ -134,9 +138,14 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
                 all_preds.extend(preds.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
 
+        val_precision = precision_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
+        val_recall = recall_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
         val_f1 = f1_score(y_true=all_labels, y_pred=all_preds, average='weighted', zero_division=0)
+
         history['val_f1'].append(val_f1)
-        print(f'Validation F1: {val_f1:.4f}')
+        history['val_precision'].append(val_precision)
+        history['val_recall'].append(val_recall)
+        print(f'Validation - Precision: {val_precision:.4f} | Recall: {val_recall:.4f} | F1: {val_f1:.4f}')
 
         # Тестирование
 
@@ -150,10 +159,19 @@ def train_model(device, model, optimizer, train_loader, train_data, val_loader, 
                     all_test_preds.extend(preds.cpu().numpy())
                     all_test_labels.extend(labels.cpu().numpy())
 
+            test_precision = precision_score(y_true=all_test_labels, y_pred=all_test_preds, average='weighted',
+                                             zero_division=0)
+            test_recall = recall_score(y_true=all_test_labels, y_pred=all_test_preds, average='weighted',
+                                       zero_division=0)
             test_f1 = f1_score(y_true=all_test_labels, y_pred=all_test_preds, average='weighted', zero_division=0)
+
             history['test_epochs'].append(epoch + 1)
             history['test_f1'].append(test_f1)
-            print(f'TEST F1 (Эпоха {epoch + 1}): {test_f1:.4f}')
+            history['test_precision'].append(test_precision)
+            history['test_recall'].append(test_recall)
+
+            print(
+                f'TEST - Precision: {test_precision:.4f} | Recall: {test_recall:.4f} | F1 (Эпоха {epoch + 1}): {test_f1:.4f}')
 
     return history
 
@@ -183,43 +201,73 @@ def create_model(pretrained=True):
 
 def plot_learning_curves(results: dict, total_epochs: int) -> None:
     """
-    Визуализирует динамику функции потерь и F1-score
+    Визуализирует динамику функции потерь и метрик (F1, Precision, Recall)
     """
     epochs = range(1, total_epochs + 1)
 
     for exp_name, metrics in results.items():
-        plt.figure(figsize=(14, 5))
+        fig = plt.figure(figsize=(16, 10))
+        fig.suptitle(f'Результаты эксперимента: {exp_name}', fontsize=16, fontweight='bold', y=1.02)
 
-        # График №1: Динамика функции потерь (Train Loss)
-        plt.subplot(1, 2, 1)
+        plt.subplot(2, 2, 1)
         plt.plot(epochs, metrics['train_loss'], linewidth=2.5, color='#1f77b4', label='Train Loss')
 
-        plt.title(label=f'Сходимость функции потерь\n({exp_name})', fontsize=14)
+        plt.title(label='Функция потерь (Loss)', fontsize=14)
         plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
         plt.ylabel(ylabel='Значение потерь', fontsize=12)
         plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
         plt.grid(visible=True, linestyle='--', alpha=0.7)
-        plt.legend(loc='upper right', fontsize=10)
+        plt.legend(loc='upper right', fontsize=11)
 
-        # График №2: Динамика F1-меры (Validation + Test)
-        plt.subplot(1, 2, 2)
+        plt.subplot(2, 2, 2)
+        plt.plot(epochs, metrics['val_f1'], alpha=0.5, linestyle='--', color='#ff7f0e', linewidth=2, label="Val F1")
+        plt.plot(metrics['test_epochs'], metrics['test_f1'], color='#ff7f0e', marker='D', markersize=8, linewidth=3,
+                 label="TEST F1")
 
-        plt.plot(epochs, metrics['val_f1'], alpha=0.5, linestyle='--', color='#ff7f0e', linewidth=2,
-                 label="Validation F1")
-
-        plt.plot(metrics['test_epochs'], metrics['test_f1'], color='#ff7f0e',
-                 marker='D', markersize=8, linewidth=3, label="TEST F1")
-
-        plt.title(label=f'Качество классификации\n({exp_name})', fontsize=14)
+        plt.title(label='F1-мера (F1-score)', fontsize=14)
         plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
-        plt.ylabel(ylabel='Взвешенная F1-мера', fontsize=12)
+        plt.ylabel(ylabel='Значение F1', fontsize=12)
         plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
 
         if max(metrics['val_f1']) > 0.5:
             plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
 
         plt.grid(visible=True, linestyle='--', alpha=0.7)
-        plt.legend(loc='lower right', fontsize=10)
+        plt.legend(loc='lower right', fontsize=11)
+
+        plt.subplot(2, 2, 3)
+        plt.plot(epochs, metrics['val_precision'], alpha=0.5, linestyle='--', color='#2ca02c', linewidth=2,
+                 label="Val Precision")
+        plt.plot(metrics['test_epochs'], metrics['test_precision'], color='#2ca02c', marker='o', markersize=8,
+                 linewidth=3, label="TEST Precision")
+
+        plt.title(label='Точность (Precision)', fontsize=14)
+        plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+        plt.ylabel(ylabel='Значение Precision', fontsize=12)
+        plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
+
+        if max(metrics['val_precision']) > 0.5:
+            plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
+
+        plt.grid(visible=True, linestyle='--', alpha=0.7)
+        plt.legend(loc='lower right', fontsize=11)
+
+        plt.subplot(2, 2, 4)
+        plt.plot(epochs, metrics['val_recall'], alpha=0.5, linestyle='--', color='#d62728', linewidth=2,
+                 label="Val Recall")
+        plt.plot(metrics['test_epochs'], metrics['test_recall'], color='#d62728', marker='s', markersize=8, linewidth=3,
+                 label="TEST Recall")
+
+        plt.title(label='Полнота (Recall)', fontsize=14)
+        plt.xlabel(xlabel='Эпоха обучения', fontsize=12)
+        plt.ylabel(ylabel='Значение Recall', fontsize=12)
+        plt.xticks(ticks=np.arange(0, total_epochs + 1, step=5))
+
+        if max(metrics['val_recall']) > 0.5:
+            plt.axhline(y=0.80, color='r', linestyle=':', alpha=0.5, label='Целевой уровень (80%)')
+
+        plt.grid(visible=True, linestyle='--', alpha=0.7)
+        plt.legend(loc='lower right', fontsize=11)
 
         plt.tight_layout()
         plt.show()
@@ -300,7 +348,7 @@ def main():
     criterion = nn.CrossEntropyLoss()
 
     # Устанавливаем количество эпох для глобального эксперимента
-    MAX_EPOCHS = 25
+    MAX_EPOCHS = 20
     all_results = {}
 
     print(f"\nЗапуск глобальных экспериментов. Количество эпох: {MAX_EPOCHS}")
